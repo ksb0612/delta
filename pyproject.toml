@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "delta"
+version = "4.1.0"
+description = "A dynamic media mix modeling simulator with Monte Carlo methods"
+authors = ["sheild0612 <sheild0612@gmail.com>"]
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.11"
+streamlit = ">=1.30.0"
+pandas = ">=2.0.0"
+numpy = ">=1.24.0"
+plotly = ">=5.18.0"
+scipy = ">=1.11.0"
+pyyaml = ">=6.0"
+streamlit-authenticator = ">=0.3.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

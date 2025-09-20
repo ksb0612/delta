@@ -1,0 +1,19 @@
+# 사용자 인증 정보 설정 파일
+credentials:
+  usernames:
+    # 'ksb0612' 라는 아이디를 가진 사용자 예시
+    ksb0612:
+      email: shield0612@gmail.com
+      name: ksb0612
+      # 비밀번호: 'abc'를 해시 변환한 값입니다.
+      password: 'rlatjdqja1'
+    
+# 쿠키 설정 (로그인 유지 시간 등)
+cookie:
+  expiry_days: 30
+  key: a_very_secret_random_key_12345 # 보안을 위해 실제 배포 시에는 다른 복잡한 문자열로 변경하세요.
+  name: simulator_cookie
+
+# 이메일 사전 승인 (선택 사항)
+preauthorized:
+  emails: []
