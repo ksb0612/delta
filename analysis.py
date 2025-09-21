@@ -12,7 +12,6 @@ class StrategicAnalyzer:
             self.config['project_info'], self.config['assumptions'], 1,
             scenario_data, {'scenario': 'ARPPU D30 (기준)', 'uplift_rate': 1.0}
         )
-        # [개선] 벡터화된 시뮬레이션 결과 처리
         result_list = simulator._run_single_simulation(deterministic=True)
         
         paid_revenue = sum(ch['revenue'].sum() for ch in result_list if ch['type'] != 'Organic')
@@ -31,13 +30,11 @@ class StrategicAnalyzer:
         change_pct = self.config['assumptions']['strategic_analysis']['change_percentage'] / 100.0
         results = []
 
-        # 유료 채널 순회
         for os_idx, os_mix in enumerate(scenario_data.get('media_mix', [])):
             for country_idx, country_mix in enumerate(os_mix.get('channels', [])):
                 for media_idx, media_mix in enumerate(country_mix.get('media', [])):
                     channel_identifier = f"{os_mix['os']}_{country_mix['country']}_{media_mix['name']}"
 
-                    # 테스트할 KPI 순회
                     for p_info in params_to_test:
                         param, key = p_info['name'], p_info['key']
                         

@@ -3,20 +3,20 @@
 # =======================================================
 project_info:
   name: "Project Phoenix Launch Campaign"
-  marketing_duration_days: 180
-  target_budget: 1000000000
-  target_roas: 1.2
+  marketing_duration_days: 30
+  target_budget: 300000000
+  target_roas: 1.0
 
 # =======================================================
 # 2. 시나리오 공통 가정
 # =======================================================
 assumptions:
   monte_carlo:
-    num_simulations: 1000
+    num_simulations: 500
   
   arppu_scenario_weights:
     d60_uplift: 1.20
-    d90_uplift: 1.35
+    d90_uplift: 1.40
   
   distribution_assumptions:
     cpi: { dist: "lognorm" }
@@ -29,8 +29,8 @@ assumptions:
     retention_d30: { dist: "norm" }
   
   ltv_curve: { type: "weibull", shape: 2.0, scale: 30 }
-  budget_pacing: { burst_days: 30, burst_intensity: 2.5 }
-  adstock: { decay_rate: 0.5, saturation_alpha: 0.8 }
+  budget_pacing: { burst_days: 15, burst_intensity: 2.5 }
+  adstock: { decay_rate: 0.2, saturation_alpha: 0.8 }
 
   strategic_analysis:
     parameters_to_test:
@@ -74,10 +74,16 @@ default_rows:
 scenario_template:
   description: "ARPPU D30을 기준으로 하는 기본 템플릿"
   organic_assumptions:
-    - { country: "US", daily_installs: { loc: 1000, scale: 200 }, payer_conversion_rate: { a: 15, b: 985 }, arppu_d30: { loc: 30000, scale: 8000 }, retention_d1: { loc: 0.4, scale: 0.05 }, retention_d7: { loc: 0.2, scale: 0.03 }, retention_d14: { loc: 0.15, scale: 0.02 }, retention_d30: { loc: 0.1, scale: 0.02 } }
-    - { country: "KR", daily_installs: { loc: 1200, scale: 250 }, payer_conversion_rate: { a: 20, b: 980 }, arppu_d30: { loc: 45000, scale: 10000 }, retention_d1: { loc: 0.45, scale: 0.05 }, retention_d7: { loc: 0.25, scale: 0.03 }, retention_d14: { loc: 0.2, scale: 0.02 }, retention_d30: { loc: 0.15, scale: 0.02 } }
+    - { country: "US", daily_installs: { loc: 900, scale: 150 }, payer_conversion_rate: { a: 55, b: 945 }, arppu_d30: { loc: 80000, scale: 5000 }, retention_d1: { loc: 0.4, scale: 0.05 }, retention_d7: { loc: 0.15, scale: 0.03 }, retention_d14: { loc: 0.1, scale: 0.02 }, retention_d30: { loc: 0.05, scale: 0.02 } }
+    - { country: "KR", daily_installs: { loc: 800, scale: 150 }, payer_conversion_rate: { a: 45, b: 955 }, arppu_d30: { loc: 150000, scale: 10000 }, retention_d1: { loc: 0.45, scale: 0.05 }, retention_d7: { loc: 0.15, scale: 0.03 }, retention_d14: { loc: 0.1, scale: 0.02 }, retention_d30: { loc: 0.05, scale: 0.02 } }
+    - { country: "JP", daily_installs: { loc: 700, scale: 150 }, payer_conversion_rate: { a: 100, b: 900 }, arppu_d30: { loc: 75000, scale: 5000 }, retention_d1: { loc: 0.45, scale: 0.05 }, retention_d7: { loc: 0.15, scale: 0.03 }, retention_d14: { loc: 0.1, scale: 0.02 }, retention_d30: { loc: 0.05, scale: 0.02 } }
+    # - { country: "TW", daily_installs: { loc: 1500, scale: 150 }, payer_conversion_rate: { a: 25, b: 975 }, arppu_d30: { loc: 45000, scale: 5000 }, retention_d1: { loc: 0.45, scale: 0.05 }, retention_d7: { loc: 0.15, scale: 0.03 }, retention_d14: { loc: 0.1, scale: 0.02 }, retention_d30: { loc: 0.05, scale: 0.02 } }
+    # - { country: "DE", daily_installs: { loc: 1000, scale: 150 }, payer_conversion_rate: { a: 30, b: 970 }, arppu_d30: { loc: 65000, scale: 8000 }, retention_d1: { loc: 0.45, scale: 0.05 }, retention_d7: { loc: 0.15, scale: 0.03 }, retention_d14: { loc: 0.1, scale: 0.02 }, retention_d30: { loc: 0.05, scale: 0.02 } }
+    # - { country: "UK", daily_installs: { loc: 700, scale: 150 }, payer_conversion_rate: { a: 35, b: 965 }, arppu_d30: { loc: 75000, scale: 7000 }, retention_d1: { loc: 0.45, scale: 0.05 }, retention_d7: { loc: 0.15, scale: 0.03 }, retention_d14: { loc: 0.1, scale: 0.02 }, retention_d30: { loc: 0.05, scale: 0.02 } }
+
+  
   media_mix:
-    - os: "iOS"
+    - os: "AOS"
       budget_ratio: 0.6
       channels:
         - country: "US"
@@ -85,7 +91,7 @@ scenario_template:
           media:
             - { name: "Google_UAC", product: "Product A", type: "UA", budget_ratio: 0.5, cpi: { loc: 8000, scale: 1500 }, payer_conversion_rate: { a: 50, b: 950 }, arppu_d30: { loc: 80000, scale: 20000 }, retention_d1: { loc: 0.40, scale: 0.05 }, retention_d7: { loc: 0.20, scale: 0.04 }, retention_d14: { loc: 0.15, scale: 0.03 }, retention_d30: { loc: 0.10, scale: 0.02 } }
             - { name: "Meta_AAA", product: "Product A", type: "UA", budget_ratio: 0.5, cpi: { loc: 7000, scale: 1200 }, payer_conversion_rate: { a: 40, b: 960 }, arppu_d30: { loc: 75000, scale: 20000 }, retention_d1: { loc: 0.41, scale: 0.05 }, retention_d7: { loc: 0.21, scale: 0.04 }, retention_d14: { loc: 0.16, scale: 0.03 }, retention_d30: { loc: 0.11, scale: 0.02 } }
-    - os: "Android"
+    - os: "iOS"
       budget_ratio: 0.4
       channels:
         - country: "US"
