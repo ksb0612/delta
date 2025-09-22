@@ -22,28 +22,14 @@ class AdvancedLaunchSimulator:
         self.assumptions = assumptions
         self.dist_assumptions = assumptions.get('distribution_assumptions', {})
         self.num_simulations = num_simulations
-        self.scenario_data = self._create_dynamic_scenario(scenario_template, arppu_params)
-        self.simulation_days = self.project_info['marketing_duration_days']
+        self.arppu_params = arppu_params
+        # [FIX] Do not modify the original scenario template. Uplift is applied dynamically.
+        self.scenario_data = copy.deepcopy(scenario_template)
+        self.simulation_days = self.project_info.get('ltv_duration_days', self.project_info['marketing_duration_days'])
+        self.marketing_days = self.project_info['marketing_duration_days']
         self.daily_budget_dist = self._generate_budget_pacing_curve()
         self.daily_ltv_dist = self._generate_ltv_curve()
 
-    def _create_dynamic_scenario(self, template: Dict, params: Dict) -> Dict:
-        new_scenario = copy.deepcopy(template)
-        uplift_rate = params.get('uplift_rate', 1.0)
-        if uplift_rate == 1.0: return new_scenario
-
-        for os_mix in new_scenario.get('media_mix', []):
-            for country_mix in os_mix.get('channels', []):
-                for media_mix in country_mix.get('media', []):
-                    if 'arppu_d30' in media_mix:
-                        media_mix['arppu_d30']['loc'] *= uplift_rate
-                        media_mix['arppu_d30']['scale'] *= uplift_rate
-        for org_mix in new_scenario.get('organic_assumptions', []):
-            if 'arppu_d30' in org_mix:
-                org_mix['arppu_d30']['loc'] *= uplift_rate
-                org_mix['arppu_d30']['scale'] *= uplift_rate
-        return new_scenario
-    
     def _sample_param(self, param_config: Dict, deterministic: bool = False) -> float:
         param_config = param_config.copy()
         if 'dist' not in param_config and 'param_name' in param_config:
@@ -91,10 +77,20 @@ class AdvancedLaunchSimulator:
                     channel_daily_spend = daily_spend_total * ratio
                     cpi = self._sample_param({**media_mix['cpi'], 'param_name': 'cpi'}, deterministic)
                     pcr = self._sample_param({**media_mix['payer_conversion_rate'], 'param_name': 'payer_conversion_rate'}, deterministic)
-                    arppu = self._sample_param({**media_mix['arppu_d30'], 'param_name': 'arppu_d30'}, deterministic)
+                    
+                    # [FIX] Apply uplift rate dynamically to the sampled base ARPPU value
+                    uplift_rate = self.arppu_params.get('uplift_rate', 1.0)
+                    base_arppu = self._sample_param({**media_mix['arppu_d30'], 'param_name': 'arppu_d30'}, deterministic)
+                    arppu = base_arppu * uplift_rate
+
                     adstock = np.zeros(self.simulation_days)
-                    for day in range(1, self.simulation_days):
+                    for day in range(1, self.marketing_days):
                         adstock[day] = channel_daily_spend[day-1] + adstock[day-1] * decay_rate
+                    
+                    # Ensure adstock has the same length as simulation_days
+                    if len(adstock) < self.simulation_days:
+                        adstock = np.pad(adstock, (0, self.simulation_days - len(adstock)), 'constant')
+
                     avg_spend = np.mean(channel_daily_spend[channel_daily_spend > 0]) if np.any(channel_daily_spend > 0) else 0
                     effective_spend = avg_spend * (adstock / avg_spend)**saturation_alpha if avg_spend > 0 else np.zeros_like(adstock)
                     cohort_installs = effective_spend / cpi if cpi > 0 else np.zeros(self.simulation_days)
@@ -111,8 +107,15 @@ class AdvancedLaunchSimulator:
         for org_mix in self.scenario_data.get('organic_assumptions', []):
             installs_per_day = self._sample_param({**org_mix['daily_installs'], 'param_name': 'daily_installs'}, deterministic)
             pcr = self._sample_param({**org_mix['payer_conversion_rate'], 'param_name': 'payer_conversion_rate'}, deterministic)
-            arppu = self._sample_param({**org_mix['arppu_d30'], 'param_name': 'arppu_d30'}, deterministic)
-            cohort_installs = np.full(self.simulation_days, installs_per_day)
+            
+            # [FIX] Apply uplift rate dynamically to the sampled base ARPPU value
+            uplift_rate = self.arppu_params.get('uplift_rate', 1.0)
+            base_arppu = self._sample_param({**org_mix['arppu_d30'], 'param_name': 'arppu_d30'}, deterministic)
+            arppu = base_arppu * uplift_rate
+            
+            cohort_installs = np.zeros(self.simulation_days)
+            cohort_installs[:self.marketing_days] = installs_per_day
+            
             daily_ltv_per_user = (pcr * arppu) * self.daily_ltv_dist
             daily_revenues = np.convolve(cohort_installs, daily_ltv_per_user, mode='full')[:self.simulation_days]
 
@@ -123,15 +126,16 @@ class AdvancedLaunchSimulator:
 
     def _generate_budget_pacing_curve(self) -> np.ndarray:
         pacing_cfg = self.assumptions.get('budget_pacing')
-        burst_days = min(pacing_cfg['burst_days'], self.simulation_days)
+        burst_days = min(pacing_cfg['burst_days'], self.marketing_days)
         intensity = pacing_cfg['burst_intensity']
-        normal_days = self.simulation_days - burst_days
+        normal_days = self.marketing_days - burst_days
         if (burst_days * intensity + normal_days) == 0: return np.zeros(self.simulation_days)
         normal_rate = 1.0 / (burst_days * intensity + normal_days)
         burst_rate = normal_rate * intensity
+        
         budget_curve = np.zeros(self.simulation_days)
         budget_curve[:burst_days] = burst_rate
-        budget_curve[burst_days:] = normal_rate
+        budget_curve[burst_days:self.marketing_days] = normal_rate
         return budget_curve
 
     def _generate_ltv_curve(self) -> np.ndarray:
@@ -156,23 +160,16 @@ class AdvancedLaunchSimulator:
                 df['os'], df['country'], df['name'], df['product'], df['type'] = \
                     channel_data['os'], channel_data['country'], channel_data['name'], channel_data['product'], channel_data['type']
                 all_results_list.append(df)
-
-            if progress_callback:
-                progress = (i + 1) / self.num_simulations
-                text = f"시뮬레이션 진행률: {int(progress * 100)}%"
-                progress_callback(progress, text)
         
         all_df = pd.concat(all_results_list, ignore_index=True)
         all_df.sort_values(by=['sim_id', 'os', 'country', 'name', 'day'], inplace=True)
         
-        # [UPDATE] Calculate paying_users for ARPPU calculation
         all_df['paying_users'] = all_df['installs'] * all_df['pcr']
         
         all_df['cum_spend'] = all_df.groupby(['sim_id', 'os', 'country', 'name'])['spend'].cumsum()
         all_df['cum_revenue'] = all_df.groupby(['sim_id', 'os', 'country', 'name'])['revenue'].cumsum()
         all_df['paid_roas'] = all_df['cum_revenue'] / all_df['cum_spend'].where(all_df['cum_spend'] > 0, np.nan)
         
-        # Aggregate final metrics per simulation
         final_summary = all_df.groupby('sim_id').agg(
             total_revenue=('revenue', 'sum'),
             paid_spend=('spend', 'sum'),
@@ -188,17 +185,14 @@ class AdvancedLaunchSimulator:
 
         final_summary = pd.merge(final_summary, paid_metrics, on='sim_id', how='left').fillna(0)
 
-        # Calculate final KPIs
         final_summary['total_profit'] = final_summary['total_revenue'] - final_summary['paid_spend']
         final_summary['paid_roas'] = final_summary['paid_revenue'] / final_summary['paid_spend'].where(final_summary['paid_spend'] > 0, np.nan)
         
-        # Blended KPIs
         final_summary['blended_cpi'] = final_summary['paid_spend'] / final_summary['total_installs'].where(final_summary['total_installs'] > 0, np.nan)
         final_summary['blended_arpu'] = final_summary['total_revenue'] / final_summary['total_installs'].where(final_summary['total_installs'] > 0, np.nan)
         final_summary['blended_pcr'] = final_summary['total_paying_users'] / final_summary['total_installs'].where(final_summary['total_installs'] > 0, np.nan)
         final_summary['blended_arppu'] = final_summary['total_revenue'] / final_summary['total_paying_users'].where(final_summary['total_paying_users'] > 0, np.nan)
 
-        # Paid KPIs
         final_summary['paid_cpi'] = final_summary['paid_spend'] / final_summary['paid_installs'].where(final_summary['paid_installs'] > 0, np.nan)
         final_summary['paid_arppu'] = final_summary['paid_revenue'] / final_summary['paid_paying_users'].where(final_summary['paid_paying_users'] > 0, np.nan)
         

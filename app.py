@@ -7,6 +7,16 @@ import streamlit_authenticator as stauth
 import os
 import json
 from scipy.stats import weibull_min
+import hashlib
+from plotly.subplots import make_subplots
+from visualization import (
+    create_roas_distribution_figure, create_timeseries_figure, create_retention_curve_figure,
+    create_sensitivity_figure, create_profit_cdf_figure, create_convergence_figure,
+    create_backtesting_figure, create_profit_histogram, create_profit_kde_plot,
+    create_cost_efficiency_analysis, create_performance_contribution_analysis  # 이 두 개 추가
+)
+
+
 
 from utils import (
     load_config, format_number, calculate_errors,
@@ -24,21 +34,42 @@ SCENARIOS_DIR = "scenarios"
 
 # --- Caching Functions ---
 @st.cache_data
-def run_cached_simulation(_project_info_str, _assumptions_str, _num_simulations, _scenario_template_str, _arppu_params_str):
-    # Unpack strings back into dictionaries
-    _project_info = json.loads(_project_info_str)
-    _assumptions = json.loads(_assumptions_str)
-    _scenario_template = json.loads(_scenario_template_str)
-    _arppu_params = json.loads(_arppu_params_str)
+# def run_cached_simulation(_settings_signature: str):
+#     """
+#     [FIX] Runs the core Monte Carlo simulation.
+#     Now takes a single JSON string signature of all settings to ensure cache invalidation.
+#     """
+#     # Unpack the signature string back into individual components
+#     settings = json.loads(_settings_signature)
+#     _project_info = settings['project_info']
+#     _assumptions = settings['assumptions']
+#     _num_simulations = settings['num_simulations']
+#     _scenario_template = settings['scenario_template']
+#     _arppu_params = settings['arppu_params']
 
-    progress_bar = st.progress(0, text="시뮬레이션을 준비 중입니다...")
-    def update_progress(progress, text):
-        progress_bar.progress(progress, text=text)
+#     simulator = AdvancedLaunchSimulator(_project_info, _assumptions, _num_simulations, _scenario_template, _arppu_params)
+#     results = simulator.run_monte_carlo()
+#     return results
+def create_settings_hash(project_info, assumptions, scenario_template, arppu_params):
+    """모든 설정의 해시값을 생성하여 변경사항을 정확히 감지"""
+    settings = {
+        "project_info": project_info,
+        "assumptions": assumptions,
+        "scenario_template": scenario_template,
+        "arppu_params": arppu_params
+    }
+    
+    # JSON으로 직렬화 후 해시 생성
+    settings_str = json.dumps(settings, default=convert_numpy_to_native, sort_keys=True)
+    return hashlib.md5(settings_str.encode()).hexdigest()
 
-    simulator = AdvancedLaunchSimulator(_project_info, _assumptions, _num_simulations, _scenario_template, _arppu_params)
-    results = simulator.run_monte_carlo(progress_callback=update_progress)
-    progress_bar.empty()
+@st.cache_data
+def run_cached_simulation(settings_hash: str, project_info, assumptions, num_simulations, scenario_template, arppu_params):
+    """설정 해시값을 기반으로 캐싱하는 시뮬레이션 함수"""
+    simulator = AdvancedLaunchSimulator(project_info, assumptions, num_simulations, scenario_template, arppu_params)
+    results = simulator.run_monte_carlo()
     return results
+
 
 @st.cache_data
 def run_cached_sensitivity_analysis(_config_str, _scenario_data_str):
@@ -67,6 +98,8 @@ def convert_numpy_to_native(data):
         return int(data)
     elif isinstance(data, np.floating):
         return float(data)
+    elif isinstance(data, pd.DataFrame):
+        return data.to_dict(orient='split')
     elif isinstance(data, np.ndarray):
         return data.tolist()
     else:
@@ -123,6 +156,9 @@ if 'show_add_channel_form' not in st.session_state:
     st.session_state.show_add_channel_form = False
 if 'page' not in st.session_state:
     st.session_state.page = "대시보드 & 결과"
+if 'last_run_settings_signature' not in st.session_state:
+    st.session_state.last_run_settings_signature = None
+
 
 # --- UI Rendering Functions ---
 def render_dashboard_summary(final_df, project_info, assumptions):
@@ -149,27 +185,57 @@ def render_target_guide(final_df, project_info, assumptions):
         st.markdown("##### 🎯 목표 달성 가이드")
         target_roas = project_info['target_roas']
         st.markdown(f"**목표 ROAS:** `{target_roas:.1%}`")
+        
+        # 기본 계산값들
         paid_installs_median = final_df['paid_installs'].median()
         total_installs_median = final_df['total_installs'].median()
         paid_revenue_median = final_df['paid_revenue'].median()
         total_revenue_median = final_df['total_revenue'].median()
         blended_pcr_median = final_df['blended_pcr'].median()
         total_budget = project_info['target_budget']
+        
+        # 목표 달성을 위한 필요 수익
         required_paid_revenue = target_roas * total_budget
         organic_revenue_median = total_revenue_median - paid_revenue_median
         required_total_revenue = required_paid_revenue + organic_revenue_median
-        blended_cpi_median = total_budget / total_installs_median if total_installs_median > 0 else 0
-        required_total_cpi = blended_cpi_median * (total_revenue_median / required_total_revenue) if required_total_revenue > 0 and total_revenue_median > 0 else np.nan
+        
+        # CPI 상한 계산
         paid_cpi_median = total_budget / paid_installs_median if paid_installs_median > 0 else 0
         improvement_factor = required_paid_revenue / paid_revenue_median if paid_revenue_median > 0 else np.nan
         required_paid_cpi = paid_cpi_median / improvement_factor if not np.isnan(improvement_factor) else np.nan
-        required_total_arpu = required_total_revenue / total_installs_median if total_installs_median > 0 else 0
+        
+        # ARPPU 최소값 계산
         total_paying_users_median = total_installs_median * blended_pcr_median
         required_total_arppu = required_total_revenue / total_paying_users_median if total_paying_users_median > 0 else 0
-        st.markdown(f"**필요 Total CPI (상한):** `{format_number(required_total_cpi, True)}`")
-        st.markdown(f"**필요 Paid CPI (상한):** `{format_number(required_paid_cpi, True)}`")
-        st.markdown(f"**필요 전체 ARPU:** `{format_number(required_total_arpu, True)}`")
-        st.markdown(f"**필요 전체 ARPPU:** `{format_number(required_total_arppu, True)}`")
+        
+        # ARPU 최소값 계산
+        required_total_arpu = required_total_revenue / total_installs_median if total_installs_median > 0 else 0
+        
+        # LTV 곡선에서 각 일차별 비율 계산 (Weibull 분포 사용)
+        from scipy.stats import weibull_min
+        ltv_cfg = assumptions['ltv_curve']
+        shape, scale = ltv_cfg['shape'], ltv_cfg['scale']
+        
+        # 각 일차별 누적 LTV 비율
+        days = [3, 7, 14, 30]
+        cumulative_ltv_ratios = {}
+        for day in days:
+            cumulative_ltv_ratios[day] = weibull_min.cdf(day, c=shape, scale=scale)
+        
+        # 각 일차별 최소 LTV 계산
+        required_ltv_d3 = required_total_arpu * cumulative_ltv_ratios[3]
+        required_ltv_d7 = required_total_arpu * cumulative_ltv_ratios[7]
+        required_ltv_d14 = required_total_arpu * cumulative_ltv_ratios[14]
+        required_ltv_d30 = required_total_arpu * cumulative_ltv_ratios[30]
+        
+        # 결과 출력
+        st.markdown(f"**CPI (상한):** `{format_number(required_paid_cpi, True)}`")
+        st.markdown(f"**ARPPU D30 (최소):** `{format_number(required_total_arppu, True)}`")
+        st.markdown(f"**ARPU D30 (최소):** `{format_number(required_total_arpu, True)}`")
+        st.markdown(f"**D+3일 LTV (최소):** `{format_number(required_ltv_d3, True)}`")
+        st.markdown(f"**D+7일 LTV (최소):** `{format_number(required_ltv_d7, True)}`")
+        st.markdown(f"**D+14일 LTV (최소):** `{format_number(required_ltv_d14, True)}`")
+        st.markdown(f"**D+30일 LTV (최소):** `{format_number(required_ltv_d30, True)}`")
 
 def render_detailed_metrics(final_df):
     st.subheader("📈 상세 지표 분석 (중앙값 기준)")
@@ -197,12 +263,16 @@ def render_detailed_metrics(final_df):
             p10, p90 = df_for_display[metric_key].quantile(0.1), df_for_display[metric_key].quantile(0.9)
             
             st.metric(key, format_number(median_val, is_currency, dec),
-                      help=f"P10: {format_number(p10, is_currency, dec)}\nP90: {format_number(p90, is_currency, dec)}")
+                    help=f"P10: {format_number(p10, is_currency, dec)}\nP90: {format_number(p90, is_currency, dec)}")
             st.caption(f"`계산식: {explanation}`")
             st.divider()
 
+# 2. app.py의 render_main_charts 함수에 추가할 코드
+
 def render_main_charts(all_df, final_df, _config, _scenario_template):
-    st.subheader("🔍 심층 분석 차트")
+    st.subheader("📊 심층 분석 차트")
+    
+    # 기존 차트들 (첫 번째 행)
     chart_col1, chart_col2 = st.columns(2)
     with chart_col1:
         st.plotly_chart(create_roas_distribution_figure(final_df), use_container_width=True)
@@ -214,10 +284,20 @@ def render_main_charts(all_df, final_df, _config, _scenario_template):
         st.plotly_chart(create_timeseries_figure(all_df), use_container_width=True)
         st.plotly_chart(create_profit_cdf_figure(final_df), use_container_width=True)
     
+    # 새로 추가되는 차트들 (두 번째 행)
+    st.subheader("📈 채널 성과 분석")
+    analysis_col1, analysis_col2 = st.columns(2)
+    with analysis_col1:
+        st.plotly_chart(create_cost_efficiency_analysis(all_df), use_container_width=True)
+    with analysis_col2:
+        st.plotly_chart(create_performance_contribution_analysis(all_df), use_container_width=True)
+    
+    # 기존 리텐션 차트
     sim_viz = AdvancedLaunchSimulator(_config['project_info'], _config['assumptions'], 1, _scenario_template, {})
     retention_details = sim_viz.get_retention_model_details()
     st.plotly_chart(create_retention_curve_figure(retention_details), use_container_width=True)
     
+    # 기존 분포 분석
     st.divider()
     st.subheader("📊 분포 분석")
     dist_col1, dist_col2 = st.columns(2)
@@ -225,6 +305,7 @@ def render_main_charts(all_df, final_df, _config, _scenario_template):
         st.plotly_chart(create_profit_histogram(final_df), use_container_width=True)
     with dist_col2:
         st.plotly_chart(create_profit_kde_plot(final_df), use_container_width=True)
+
 
 # --- Authentication ---
 try:
@@ -250,10 +331,15 @@ authenticator.logout('로그아웃', 'sidebar')
 st.sidebar.divider()
 
 st.sidebar.title("메뉴")
+# 추가: 캐시 강제 초기화 버튼 (디버깅용)
+if st.sidebar.button("🔄 캐시 초기화"):
+    st.cache_data.clear()
+    st.session_state.simulation_results.clear()
+    st.success("캐시가 초기화되었습니다!")
 page_options = ["📊 대시보드 & 결과", "⚙️ 시나리오 에디터", "🔍 모델 신뢰도 평가"]
 st.session_state.page = st.sidebar.radio("페이지를 선택하세요", page_options, label_visibility="collapsed")
 
-st.title("📈 동적 미디어믹스 시뮬레이터 (v8.4 - LTV Period)")
+st.title("📈 동적 미디어믹스 시뮬레이터 (v8.8 - Final)")
 
 # --- Page Content ---
 if st.session_state.page == "📊 대시보드 & 결과":
@@ -261,37 +347,80 @@ if st.session_state.page == "📊 대시보드 & 결과":
     st.header(f"📊 대시보드 & 결과: {selected_arppu_scenario}")
     
     if st.button("🚀 시뮬레이션 실행", type="primary", key="run_sim_main"):
-        with st.spinner(f"{selected_arppu_scenario} 시나리오로 시뮬레이션을 실행합니다..."):
+        with st.spinner(f"'{selected_arppu_scenario}' 시나리오로 시뮬레이션을 실행합니다..."):
             current_scenario_template = {
                 'media_mix': reconstruct_scenario_from_df(st.session_state.media_mix_df.copy(), 'media_mix'),
                 'organic_assumptions': reconstruct_scenario_from_df(st.session_state.organic_df.copy(), 'organic')
             }
             
             parts = selected_arppu_scenario.split(" ")
-            if len(parts) > 1:
-                arppu_key = f"{parts[1].lower()}_uplift"
-            else:
-                arppu_key = "d30_uplift" 
+            day_part = parts[1].lower() if len(parts) > 1 else "d30"
+            uplift_config_key = f"{day_part}_uplift"
 
             arppu_params = {
                 'scenario': selected_arppu_scenario,
-                'uplift_rate': st.session_state.assumptions['arppu_scenario_weights'].get(arppu_key, 1.0)
+                'uplift_rate': st.session_state.assumptions['arppu_scenario_weights'].get(uplift_config_key, 1.0),
             }
             
-            project_info_str = json.dumps(convert_numpy_to_native(st.session_state.project_info), sort_keys=True)
-            assumptions_str = json.dumps(convert_numpy_to_native(st.session_state.assumptions), sort_keys=True)
-            scenario_template_str = json.dumps(convert_numpy_to_native(current_scenario_template), sort_keys=True)
-            arppu_params_str = json.dumps(arppu_params, sort_keys=True)
-
-            all_df, final_df = run_cached_simulation(
-                project_info_str, 
-                assumptions_str, 
-                st.session_state.assumptions['monte_carlo']['num_simulations'], 
-                scenario_template_str, 
-                arppu_params_str
+            # 설정 해시 생성
+            settings_hash = create_settings_hash(
+                st.session_state.project_info,
+                st.session_state.assumptions, 
+                current_scenario_template,
+                arppu_params
             )
-            st.session_state.simulation_results[selected_arppu_scenario] = {"all_df": all_df, "final_df": final_df, "scenario_used": current_scenario_template}
-        st.success(f"{selected_arppu_scenario} 시뮬레이션이 완료되었습니다!")
+            
+            # 해시를 포함한 캐싱된 시뮬레이션 실행
+            all_df, final_df = run_cached_simulation(
+                settings_hash,
+                st.session_state.project_info,
+                st.session_state.assumptions,
+                st.session_state.assumptions['monte_carlo']['num_simulations'],
+                current_scenario_template,
+                arppu_params
+            )
+            
+            st.session_state.simulation_results[selected_arppu_scenario] = {
+                "all_df": all_df, 
+                "final_df": final_df, 
+                "scenario_used": current_scenario_template,
+                "settings_hash": settings_hash  # 해시값도 저장
+            }
+            
+        st.success(f"'{selected_arppu_scenario}' 시뮬레이션이 완료되었습니다!")
+
+    # if st.button("🚀 시뮬레이션 실행", type="primary", key="run_sim_main"):
+    #     with st.spinner(f"'{selected_arppu_scenario}' 시나리오로 시뮬레이션을 실행합니다... (첫 실행은 다소 시간이 걸릴 수 있습니다)"):
+    #         current_scenario_template = {
+    #             'media_mix': reconstruct_scenario_from_df(st.session_state.media_mix_df.copy(), 'media_mix'),
+    #             'organic_assumptions': reconstruct_scenario_from_df(st.session_state.organic_df.copy(), 'organic')
+    #         }
+            
+    #         parts = selected_arppu_scenario.split(" ")
+    #         day_part = parts[1].lower() if len(parts) > 1 else "d30"
+    #         uplift_config_key = f"{day_part}_uplift"
+
+    #         arppu_params = {
+    #             'scenario': selected_arppu_scenario,
+    #             'uplift_rate': st.session_state.assumptions['arppu_scenario_weights'].get(uplift_config_key, 1.0),
+    #         }
+            
+    #         # [FIX] Create a comprehensive signature of all settings for robust cache invalidation
+    #         current_settings = {
+    #             "project_info": st.session_state.project_info,
+    #             "assumptions": st.session_state.assumptions,
+    #             "num_simulations": st.session_state.assumptions['monte_carlo']['num_simulations'],
+    #             "scenario_template": current_scenario_template,
+    #             "arppu_params": arppu_params
+    #         }
+    #         settings_signature = json.dumps(current_settings, default=convert_numpy_to_native, sort_keys=True)
+            
+    #         all_df, final_df = run_cached_simulation(settings_signature)
+            
+    #         st.session_state.simulation_results[selected_arppu_scenario] = {"all_df": all_df, "final_df": final_df, "scenario_used": current_scenario_template}
+    #         # Store the signature of the successful run
+    #         st.session_state.last_run_settings_signature = settings_signature
+    #     st.success(f"'{selected_arppu_scenario}' 시뮬레이션이 완료되었습니다!")
 
     if selected_arppu_scenario in st.session_state.simulation_results:
         results = st.session_state.simulation_results[selected_arppu_scenario]
@@ -397,7 +526,7 @@ elif st.session_state.page == "⚙️ 시나리오 에디터":
         with row2_col1:
             p_info['target_budget'] = st.number_input("총 광고 예산 (원)", 1000000, None, p_info.get('target_budget', 1000000000), 1000000)
         with row2_col2:
-            p_info['target_roas'] = pc3.number_input("목표 ROAS (%)", 1.0, None, p_info.get('target_roas', 1.2) * 100, 1.0) / 100.0
+            p_info['target_roas'] = row2_col2.number_input("목표 ROAS (%)", 1.0, None, p_info.get('target_roas', 1.2) * 100, 1.0) / 100.0
 
     with st.expander("3. 고급 시뮬레이션 설정"):
         assump = st.session_state.assumptions
@@ -415,6 +544,7 @@ elif st.session_state.page == "⚙️ 시나리오 에디터":
     # --- Add Forms ---
     def render_add_channel_form():
         with st.form(key="add_channel_form"):
+            # ... (form content remains the same)
             st.subheader("📢 새로운 유료 채널 추가")
             default_paid = st.session_state.config['default_rows']['paid']
             st.markdown("<h6>채널 정보</h6>", unsafe_allow_html=True)
@@ -520,6 +650,7 @@ elif st.session_state.page == "⚙️ 시나리오 에디터":
 
     def render_add_organic_form():
         with st.form(key="add_organic_form"):
+            # ... (form content remains the same)
             st.subheader("🌱 새로운 자연 유입 국가 추가")
             default_org = st.session_state.config['default_rows']['organic']
             country_val = st.text_input("국가", default_org['country'])
@@ -610,6 +741,24 @@ elif st.session_state.page == "⚙️ 시나리오 에디터":
         )
         st.session_state.organic_df = edited_organic_df
 
+    # [FIX] Logic to clear results if settings have changed
+    current_scenario_template_for_check = {
+        'media_mix': reconstruct_scenario_from_df(st.session_state.media_mix_df.copy(), 'media_mix'),
+        'organic_assumptions': reconstruct_scenario_from_df(st.session_state.organic_df.copy(), 'organic')
+    }
+    current_settings_for_check = {
+        "project_info": st.session_state.project_info,
+        "assumptions": st.session_state.assumptions,
+        "scenario_template": current_scenario_template_for_check,
+        "arppu_choice": st.session_state.arppu_choice
+    }
+    current_signature = json.dumps(current_settings_for_check, default=convert_numpy_to_native, sort_keys=True)
+    
+    if st.session_state.last_run_settings_signature and current_signature != st.session_state.last_run_settings_signature:
+        st.session_state.simulation_results.clear()
+        st.session_state.last_run_settings_signature = None
+        st.toast("⚙️ 설정이 변경되었습니다. 대시보드에서 시뮬레이션을 다시 실행해주세요.")
+
 
 elif st.session_state.page == "🔍 모델 신뢰도 평가":
     st.header("🔍 모델 신뢰도 평가")
@@ -622,13 +771,6 @@ elif st.session_state.page == "🔍 모델 신뢰도 평가":
                 'organic_assumptions': reconstruct_scenario_from_df(st.session_state.organic_df.copy(), 'organic')
             }
             
-            project_info_str = json.dumps(convert_numpy_to_native(st.session_state.project_info), sort_keys=True)
-            assumptions_str = json.dumps(convert_numpy_to_native(st.session_state.assumptions), sort_keys=True)
-            convergence_scenario_str = json.dumps(convert_numpy_to_native(convergence_scenario), sort_keys=True)
-            arppu_params_str = json.dumps({'scenario': 'ARPPU D30 (기준)', 'uplift_rate': 1.0}, sort_keys=True)
-
-            # Note: For simplicity, convergence test runs with default ARPPU.
-            # We need a simulator instance which is not cached to run the test.
             sim = AdvancedLaunchSimulator(st.session_state.project_info, st.session_state.assumptions, st.session_state.assumptions['monte_carlo']['num_simulations'], convergence_scenario, {'scenario': 'ARPPU D30 (기준)', 'uplift_rate': 1.0})
             convergence_data = sim.run_convergence_test()
             st.plotly_chart(create_convergence_figure(convergence_data), use_container_width=True)
@@ -650,12 +792,15 @@ elif st.session_state.page == "🔍 모델 신뢰도 평가":
                             'organic_assumptions': reconstruct_scenario_from_df(st.session_state.organic_df.copy(), 'organic')
                         }
                         
-                        project_info_str = json.dumps(convert_numpy_to_native(st.session_state.project_info), sort_keys=True)
-                        assumptions_str = json.dumps(convert_numpy_to_native(st.session_state.assumptions), sort_keys=True)
-                        backtest_scenario_str = json.dumps(convert_numpy_to_native(backtest_scenario), sort_keys=True)
-                        arppu_params_str = json.dumps({'scenario': 'ARPPU D30 (기준)', 'uplift_rate': 1.0}, sort_keys=True)
-
-                        all_df_backtest, _ = run_cached_simulation(project_info_str, assumptions_str, 300, backtest_scenario_str, arppu_params_str)
+                        settings_for_backtest = {
+                            "project_info": st.session_state.project_info,
+                            "assumptions": st.session_state.assumptions,
+                            "num_simulations": 300, # Using a fixed number for backtesting
+                            "scenario_template": backtest_scenario,
+                            "arppu_params": {'scenario': 'ARPPU D30 (기준)', 'uplift_rate': 1.0}
+                        }
+                        backtest_signature = json.dumps(settings_for_backtest, default=convert_numpy_to_native, sort_keys=True)
+                        all_df_backtest, _ = run_cached_simulation(backtest_signature)
                         
                         sim_median_roas = all_df_backtest.groupby('day')['paid_roas'].median().reset_index().rename(columns={'paid_roas': 'predicted_roas'})
                         comparison_df = pd.merge(actual_data, sim_median_roas, on='day', how='left').dropna()

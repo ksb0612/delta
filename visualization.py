@@ -109,3 +109,212 @@ def create_profit_kde_plot(final_df: pd.DataFrame) -> go.Figure:
     )
     return fig
 
+def create_cost_efficiency_analysis(all_df: pd.DataFrame) -> go.Figure:
+    """비용 효율성 분석: 채널별 CPI vs ROAS 산점도"""
+    # 채널별 집계 - 수정된 버전
+    channel_summary = all_df[all_df['type'] != 'Organic'].groupby(['os', 'country', 'name']).agg({
+        'cum_spend': lambda x: x.iloc[-1] if len(x) > 0 else 0,
+        'cum_revenue': lambda x: x.iloc[-1] if len(x) > 0 else 0,
+        'installs': 'sum'
+    }).reset_index()
+    
+    # CPI와 ROAS 계산
+    channel_summary['avg_cpi'] = channel_summary['cum_spend'] / channel_summary['installs'].replace(0, np.nan)
+    channel_summary['final_roas'] = channel_summary['cum_revenue'] / channel_summary['cum_spend'].replace(0, np.nan)
+    
+    # NaN 값 제거
+    channel_summary = channel_summary.dropna(subset=['avg_cpi', 'final_roas'])
+    
+    if len(channel_summary) == 0:
+        # 데이터가 없을 경우 빈 차트 반환
+        fig = go.Figure()
+        fig.add_annotation(
+            text="분석할 데이터가 없습니다.",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16)
+        )
+        fig.update_layout(title_text="<b>비용 효율성 분석</b>")
+        return fig
+    
+    # 채널명 생성
+    channel_summary['channel_label'] = channel_summary['os'] + '_' + channel_summary['country'] + '_' + channel_summary['name']
+    
+    # 버블 사이즈를 위한 정규화
+    max_spend = channel_summary['cum_spend'].max()
+    if max_spend > 0:
+        channel_summary['bubble_size'] = (channel_summary['cum_spend'] / max_spend) * 40 + 15
+    else:
+        channel_summary['bubble_size'] = 20
+    
+    fig = go.Figure()
+    
+    # 각 채널을 점으로 표시
+    fig.add_trace(go.Scatter(
+        x=channel_summary['avg_cpi'],
+        y=channel_summary['final_roas'],
+        mode='markers+text',
+        marker=dict(
+            size=channel_summary['bubble_size'],
+            color=channel_summary['final_roas'],
+            colorscale='RdYlGn',
+            showscale=True,
+            colorbar=dict(title="ROAS"),
+            line=dict(width=2, color='white')
+        ),
+        text=channel_summary['channel_label'],
+        textposition="top center",
+        textfont=dict(size=10),
+        name='채널별 효율성',
+        hovertemplate='<b>%{text}</b><br>CPI: %{x:,.0f}원<br>ROAS: %{y:.2f}<br>총 지출: %{customdata:,.0f}원<extra></extra>',
+        customdata=channel_summary['cum_spend']
+    ))
+    
+    # 목표 ROAS 라인 추가
+    fig.add_hline(y=1.0, line_dash="dash", line_color="red", 
+                  annotation_text="목표 ROAS (1.0)", annotation_position="bottom right")
+    
+    fig.update_layout(
+        title_text="<b>비용 효율성 분석: 채널별 CPI vs ROAS</b>",
+        xaxis_title="평균 CPI (원)",
+        yaxis_title="최종 ROAS",
+        showlegend=False,
+        height=500,
+        annotations=[
+            dict(
+                x=0.02, y=0.98, xref="paper", yref="paper",
+                text="💡 우상단(낮은 CPI, 높은 ROAS)이 가장 효율적",
+                showarrow=False, font=dict(size=10),
+                bgcolor="rgba(255,255,255,0.8)", bordercolor="gray", borderwidth=1
+            )
+        ]
+    )
+    
+    return fig
+
+def create_performance_contribution_analysis(all_df: pd.DataFrame) -> go.Figure:
+    """성과 기여도 분석: 채널별 매출 기여도와 지출 비중"""
+    # 채널별 최종 누적값 계산 - 수정된 버전
+    channel_final = all_df[all_df['type'] != 'Organic'].groupby(['os', 'country', 'name']).agg({
+        'cum_revenue': lambda x: x.iloc[-1] if len(x) > 0 else 0,
+        'cum_spend': lambda x: x.iloc[-1] if len(x) > 0 else 0,
+        'installs': 'sum'
+    }).reset_index()
+    
+    # 전체 대비 비중 계산
+    total_revenue = channel_final['cum_revenue'].sum()
+    total_spend = channel_final['cum_spend'].sum()
+    
+    if total_revenue == 0 or total_spend == 0:
+        # 데이터가 없을 경우 빈 차트 반환
+        fig = go.Figure()
+        fig.add_annotation(
+            text="분석할 데이터가 없습니다.",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16)
+        )
+        fig.update_layout(title_text="<b>성과 기여도 분석</b>")
+        return fig
+    
+    channel_final['revenue_share'] = (channel_final['cum_revenue'] / total_revenue) * 100
+    channel_final['spend_share'] = (channel_final['cum_spend'] / total_spend) * 100
+    channel_final['efficiency_ratio'] = channel_final['revenue_share'] / channel_final['spend_share'].replace(0, np.nan)
+    
+    # NaN 값 제거
+    channel_final = channel_final.dropna(subset=['efficiency_ratio'])
+    
+    # 채널명 생성
+    channel_final['channel_label'] = channel_final['os'] + '_' + channel_final['country'] + '_' + channel_final['name']
+    
+    # 서브플롯 생성
+    from plotly.subplots import make_subplots
+    
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=('매출 vs 지출 기여도', '채널별 효율성 지수'),
+        specs=[[{"secondary_y": False}, {"type": "bar"}]],
+        horizontal_spacing=0.15
+    )
+    
+    # 첫 번째 차트: 매출 vs 지출 기여도 산점도
+    fig.add_trace(
+        go.Scatter(
+            x=channel_final['spend_share'],
+            y=channel_final['revenue_share'],
+            mode='markers+text',
+            marker=dict(
+                size=15,
+                color=channel_final['efficiency_ratio'],
+                colorscale='RdYlGn',
+                showscale=True,
+                colorbar=dict(title="효율성 지수", x=0.45),
+                line=dict(width=2, color='white')
+            ),
+            text=channel_final['channel_label'],
+            textposition="top center",
+            textfont=dict(size=8),
+            name='기여도',
+            hovertemplate='<b>%{text}</b><br>지출 비중: %{x:.1f}%<br>매출 비중: %{y:.1f}%<br>효율성 지수: %{marker.color:.2f}<extra></extra>'
+        ),
+        row=1, col=1
+    )
+    
+    # 대각선 (이상적인 균형선) 추가
+    max_val = max(channel_final['spend_share'].max(), channel_final['revenue_share'].max())
+    fig.add_trace(
+        go.Scatter(
+            x=[0, max_val],
+            y=[0, max_val],
+            mode='lines',
+            line=dict(dash='dash', color='gray'),
+            name='균형선',
+            hoverinfo='skip',
+            showlegend=False
+        ),
+        row=1, col=1
+    )
+    
+    # 두 번째 차트: 효율성 지수 막대 차트
+    colors = ['red' if x < 1 else 'green' for x in channel_final['efficiency_ratio']]
+    
+    fig.add_trace(
+        go.Bar(
+            x=channel_final['channel_label'],
+            y=channel_final['efficiency_ratio'],
+            marker_color=colors,
+            name='효율성 지수',
+            showlegend=False,
+            hovertemplate='<b>%{x}</b><br>효율성 지수: %{y:.2f}<extra></extra>'
+        ),
+        row=1, col=2
+    )
+    
+    # 효율성 기준선 추가
+    fig.add_hline(y=1.0, line_dash="dash", line_color="orange", row=1, col=2)
+    
+    # 레이아웃 업데이트
+    fig.update_xaxes(title_text="지출 비중 (%)", row=1, col=1)
+    fig.update_yaxes(title_text="매출 비중 (%)", row=1, col=1)
+    fig.update_xaxes(title_text="채널", row=1, col=2, tickangle=45)
+    fig.update_yaxes(title_text="효율성 지수", row=1, col=2)
+    
+    fig.update_layout(
+        title_text="<b>성과 기여도 분석</b>",
+        showlegend=False,
+        height=500,
+        annotations=[
+            dict(
+                x=0.25, y=-0.2, xref="paper", yref="paper",
+                text="💡 균형선 위쪽은 매출 기여도가 지출 비중보다 높은 채널",
+                showarrow=False, font=dict(size=10)
+            ),
+            dict(
+                x=0.75, y=-0.2, xref="paper", yref="paper", 
+                text="💡 1.0 이상은 효율적인 채널",
+                showarrow=False, font=dict(size=10)
+            )
+        ]
+    )
+    
+    return fig
