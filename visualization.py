@@ -111,83 +111,67 @@ def create_profit_kde_plot(final_df: pd.DataFrame) -> go.Figure:
 
 def create_cost_efficiency_analysis(all_df: pd.DataFrame) -> go.Figure:
     """비용 효율성 분석: 채널별 CPI vs ROAS 산점도"""
-    # 채널별 집계 - 수정된 버전
-    channel_summary = all_df[all_df['type'] != 'Organic'].groupby(['os', 'country', 'name']).agg({
-        'cum_spend': lambda x: x.iloc[-1] if len(x) > 0 else 0,
-        'cum_revenue': lambda x: x.iloc[-1] if len(x) > 0 else 0,
-        'installs': 'sum'
-    }).reset_index()
+    # [FIX] 채널별 '전체 기간'의 지출과 설치를 '합산'하여 평균 CPI를 계산합니다.
+    # 각 시뮬레이션 실행별로 채널의 최종 성과를 먼저 집계합니다.
+    channel_summary = all_df[all_df['type'] != 'Organic'].groupby(['sim_id', 'os', 'country', 'name']).agg(
+        total_spend=('spend', 'sum'),
+        total_revenue=('revenue', 'sum'),
+        total_installs=('installs', 'sum')
+    ).reset_index()
+
+    # 각 채널의 중앙값 성과를 사용하여 대표 값을 도출합니다.
+    median_channel_performance = channel_summary.groupby(['os', 'country', 'name']).median().reset_index()
     
     # CPI와 ROAS 계산
-    channel_summary['avg_cpi'] = channel_summary['cum_spend'] / channel_summary['installs'].replace(0, np.nan)
-    channel_summary['final_roas'] = channel_summary['cum_revenue'] / channel_summary['cum_spend'].replace(0, np.nan)
+    median_channel_performance['avg_cpi'] = median_channel_performance['total_spend'] / median_channel_performance['total_installs'].replace(0, np.nan)
+    median_channel_performance['final_roas'] = median_channel_performance['total_revenue'] / median_channel_performance['total_spend'].replace(0, np.nan)
     
-    # NaN 값 제거
-    channel_summary = channel_summary.dropna(subset=['avg_cpi', 'final_roas'])
+    # NaN 값 제거 및 데이터 유효성 검사
+    median_channel_performance = median_channel_performance.dropna(subset=['avg_cpi', 'final_roas'])
     
-    if len(channel_summary) == 0:
-        # 데이터가 없을 경우 빈 차트 반환
+    if len(median_channel_performance) == 0:
         fig = go.Figure()
-        fig.add_annotation(
-            text="분석할 데이터가 없습니다.",
-            xref="paper", yref="paper",
-            x=0.5, y=0.5, showarrow=False,
-            font=dict(size=16)
-        )
+        fig.add_annotation(text="분석할 데이터가 없습니다.", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
         fig.update_layout(title_text="<b>비용 효율성 분석</b>")
         return fig
     
-    # 채널명 생성
-    channel_summary['channel_label'] = channel_summary['os'] + '_' + channel_summary['country'] + '_' + channel_summary['name']
-    
-    # 버블 사이즈를 위한 정규화
-    max_spend = channel_summary['cum_spend'].max()
-    if max_spend > 0:
-        channel_summary['bubble_size'] = (channel_summary['cum_spend'] / max_spend) * 40 + 15
-    else:
-        channel_summary['bubble_size'] = 20
+    # 채널명 및 버블 사이즈 생성
+    median_channel_performance['channel_label'] = median_channel_performance['os'] + '_' + median_channel_performance['country'] + '_' + median_channel_performance['name']
+    max_spend = median_channel_performance['total_spend'].max()
+    median_channel_performance['bubble_size'] = (median_channel_performance['total_spend'] / max_spend) * 40 + 15 if max_spend > 0 else 20
     
     fig = go.Figure()
     
-    # 각 채널을 점으로 표시
+    # 차트 생성
     fig.add_trace(go.Scatter(
-        x=channel_summary['avg_cpi'],
-        y=channel_summary['final_roas'],
+        x=median_channel_performance['avg_cpi'],
+        y=median_channel_performance['final_roas'],
         mode='markers+text',
         marker=dict(
-            size=channel_summary['bubble_size'],
-            color=channel_summary['final_roas'],
+            size=median_channel_performance['bubble_size'],
+            color=median_channel_performance['final_roas'],
             colorscale='RdYlGn',
             showscale=True,
             colorbar=dict(title="ROAS"),
             line=dict(width=2, color='white')
         ),
-        text=channel_summary['channel_label'],
+        text=median_channel_performance['channel_label'],
         textposition="top center",
         textfont=dict(size=10),
         name='채널별 효율성',
         hovertemplate='<b>%{text}</b><br>CPI: %{x:,.0f}원<br>ROAS: %{y:.2f}<br>총 지출: %{customdata:,.0f}원<extra></extra>',
-        customdata=channel_summary['cum_spend']
+        customdata=median_channel_performance['total_spend']
     ))
     
-    # 목표 ROAS 라인 추가
     fig.add_hline(y=1.0, line_dash="dash", line_color="red", 
-                  annotation_text="목표 ROAS (1.0)", annotation_position="bottom right")
+                  annotation_text="손익분기 ROAS (1.0)", annotation_position="bottom right")
     
     fig.update_layout(
         title_text="<b>비용 효율성 분석: 채널별 CPI vs ROAS</b>",
         xaxis_title="평균 CPI (원)",
         yaxis_title="최종 ROAS",
         showlegend=False,
-        height=500,
-        annotations=[
-            dict(
-                x=0.02, y=0.98, xref="paper", yref="paper",
-                text="💡 우상단(낮은 CPI, 높은 ROAS)이 가장 효율적",
-                showarrow=False, font=dict(size=10),
-                bgcolor="rgba(255,255,255,0.8)", bordercolor="gray", borderwidth=1
-            )
-        ]
+        height=500
     )
     
     return fig

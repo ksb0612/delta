@@ -13,7 +13,7 @@ from visualization import (
     create_roas_distribution_figure, create_timeseries_figure, create_retention_curve_figure,
     create_sensitivity_figure, create_profit_cdf_figure, create_convergence_figure,
     create_backtesting_figure, create_profit_histogram, create_profit_kde_plot,
-    create_cost_efficiency_analysis, create_performance_contribution_analysis  # 이 두 개 추가
+    create_cost_efficiency_analysis, create_performance_contribution_analysis
 )
 
 
@@ -24,32 +24,12 @@ from utils import (
 )
 from advanced_simulator import AdvancedLaunchSimulator
 from analysis import StrategicAnalyzer
-from visualization import (
-    create_roas_distribution_figure, create_timeseries_figure, create_retention_curve_figure,
-    create_sensitivity_figure, create_profit_cdf_figure, create_convergence_figure,
-    create_backtesting_figure, create_profit_histogram, create_profit_kde_plot
-)
+
 
 SCENARIOS_DIR = "scenarios"
 
 # --- Caching Functions ---
 @st.cache_data
-# def run_cached_simulation(_settings_signature: str):
-#     """
-#     [FIX] Runs the core Monte Carlo simulation.
-#     Now takes a single JSON string signature of all settings to ensure cache invalidation.
-#     """
-#     # Unpack the signature string back into individual components
-#     settings = json.loads(_settings_signature)
-#     _project_info = settings['project_info']
-#     _assumptions = settings['assumptions']
-#     _num_simulations = settings['num_simulations']
-#     _scenario_template = settings['scenario_template']
-#     _arppu_params = settings['arppu_params']
-
-#     simulator = AdvancedLaunchSimulator(_project_info, _assumptions, _num_simulations, _scenario_template, _arppu_params)
-#     results = simulator.run_monte_carlo()
-#     return results
 def create_settings_hash(project_info, assumptions, scenario_template, arppu_params):
     """모든 설정의 해시값을 생성하여 변경사항을 정확히 감지"""
     settings = {
@@ -185,57 +165,55 @@ def render_target_guide(final_df, project_info, assumptions):
         st.markdown("##### 🎯 목표 달성 가이드")
         target_roas = project_info['target_roas']
         st.markdown(f"**목표 ROAS:** `{target_roas:.1%}`")
-        
+
         # 기본 계산값들
         paid_installs_median = final_df['paid_installs'].median()
-        total_installs_median = final_df['total_installs'].median()
         paid_revenue_median = final_df['paid_revenue'].median()
-        total_revenue_median = final_df['total_revenue'].median()
-        blended_pcr_median = final_df['blended_pcr'].median()
+        paid_pcr_median = final_df['paid_paying_users'].median() / paid_installs_median if paid_installs_median > 0 else 0
         total_budget = project_info['target_budget']
-        
-        # 목표 달성을 위한 필요 수익
+
+        # 목표 달성을 위한 필요 유료 수익
         required_paid_revenue = target_roas * total_budget
-        organic_revenue_median = total_revenue_median - paid_revenue_median
-        required_total_revenue = required_paid_revenue + organic_revenue_median
         
-        # CPI 상한 계산
-        paid_cpi_median = total_budget / paid_installs_median if paid_installs_median > 0 else 0
+        # CPI (상한)
+        paid_cpi_median = final_df['paid_cpi'].median()
         improvement_factor = required_paid_revenue / paid_revenue_median if paid_revenue_median > 0 else np.nan
         required_paid_cpi = paid_cpi_median / improvement_factor if not np.isnan(improvement_factor) else np.nan
-        
-        # ARPPU 최소값 계산
-        total_paying_users_median = total_installs_median * blended_pcr_median
-        required_total_arppu = required_total_revenue / total_paying_users_median if total_paying_users_median > 0 else 0
-        
-        # ARPU 최소값 계산
-        required_total_arpu = required_total_revenue / total_installs_median if total_installs_median > 0 else 0
-        
-        # LTV 곡선에서 각 일차별 비율 계산 (Weibull 분포 사용)
+
+        # [FIX] LTV, ARPU, ARPPU를 30일 기준으로 재계산
         from scipy.stats import weibull_min
         ltv_cfg = assumptions['ltv_curve']
         shape, scale = ltv_cfg['shape'], ltv_cfg['scale']
         
-        # 각 일차별 누적 LTV 비율
-        days = [3, 7, 14, 30]
-        cumulative_ltv_ratios = {}
-        for day in days:
-            cumulative_ltv_ratios[day] = weibull_min.cdf(day, c=shape, scale=scale)
+        # 전체 LTV 기간 대비 30일차의 매출 비중
+        ltv_ratio_d30 = weibull_min.cdf(30, c=shape, scale=scale)
         
-        # 각 일차별 최소 LTV 계산
-        required_ltv_d3 = required_total_arpu * cumulative_ltv_ratios[3]
-        required_ltv_d7 = required_total_arpu * cumulative_ltv_ratios[7]
-        required_ltv_d14 = required_total_arpu * cumulative_ltv_ratios[14]
-        required_ltv_d30 = required_total_arpu * cumulative_ltv_ratios[30]
+        # 30일차에 필요한 유료 수익
+        required_paid_revenue_d30 = required_paid_revenue * ltv_ratio_d30
         
-        # 결과 출력
-        st.markdown(f"**CPI (상한):** `{format_number(required_paid_cpi, True)}`")
-        st.markdown(f"**ARPPU D30 (최소):** `{format_number(required_total_arppu, True)}`")
-        st.markdown(f"**ARPU D30 (최소):** `{format_number(required_total_arpu, True)}`")
-        st.markdown(f"**D+3일 LTV (최소):** `{format_number(required_ltv_d3, True)}`")
-        st.markdown(f"**D+7일 LTV (최소):** `{format_number(required_ltv_d7, True)}`")
-        st.markdown(f"**D+14일 LTV (최소):** `{format_number(required_ltv_d14, True)}`")
-        st.markdown(f"**D+30일 LTV (최소):** `{format_number(required_ltv_d30, True)}`")
+        # 30일 기준 목표 ARPU 및 ARPPU
+        required_paid_arpu_d30 = required_paid_revenue_d30 / paid_installs_median if paid_installs_median > 0 else 0
+        paid_paying_users_median = paid_installs_median * paid_pcr_median
+        required_paid_arppu_d30 = required_paid_revenue_d30 / paid_paying_users_median if paid_paying_users_median > 0 else 0
+
+        # 단기 LTV 목표 계산
+        days = [3, 7, 14]
+        cumulative_ltv_ratios = {day: weibull_min.cdf(day, c=shape, scale=scale) for day in days}
+        
+        # 30일 ARPU를 기준으로 각 시점별 LTV 계산
+        required_ltv_d3 = required_paid_arpu_d30 * (cumulative_ltv_ratios[3] / ltv_ratio_d30) if ltv_ratio_d30 > 0 else 0
+        required_ltv_d7 = required_paid_arpu_d30 * (cumulative_ltv_ratios[7] / ltv_ratio_d30) if ltv_ratio_d30 > 0 else 0
+        required_ltv_d14 = required_paid_arpu_d30 * (cumulative_ltv_ratios[14] / ltv_ratio_d30) if ltv_ratio_d30 > 0 else 0
+        
+        # 결과 출력 (D+30일 LTV는 ARPU D30과 동일)
+        st.markdown(f"**유료 CPI (상한):** `{format_number(required_paid_cpi, True)}`")
+        st.markdown(f"**유료 ARPPU D30 (최소):** `{format_number(required_paid_arppu_d30, True)}`")
+        st.markdown(f"**유료 ARPU D30 (최소):** `{format_number(required_paid_arpu_d30, True)}`")
+        st.markdown(f"**유료 D+3일 LTV (최소):** `{format_number(required_ltv_d3, True)}`")
+        st.markdown(f"**유료 D+7일 LTV (최소):** `{format_number(required_ltv_d7, True)}`")
+        st.markdown(f"**유료 D+14일 LTV (최소):** `{format_number(required_ltv_d14, True)}`")
+        st.markdown(f"**유료 D+30일 LTV (최소):** `{format_number(required_paid_arpu_d30, True)}`")
+
 
 def render_detailed_metrics(final_df):
     st.subheader("📈 상세 지표 분석 (중앙값 기준)")
@@ -339,7 +317,7 @@ if st.sidebar.button("🔄 캐시 초기화"):
 page_options = ["📊 대시보드 & 결과", "⚙️ 시나리오 에디터", "🔍 모델 신뢰도 평가"]
 st.session_state.page = st.sidebar.radio("페이지를 선택하세요", page_options, label_visibility="collapsed")
 
-st.title("📈 동적 미디어믹스 시뮬레이터 (v8.8 - Final)")
+st.title("📈 MediaMix Simulator (v8.9 - Final)")
 
 # --- Page Content ---
 if st.session_state.page == "📊 대시보드 & 결과":
@@ -388,39 +366,6 @@ if st.session_state.page == "📊 대시보드 & 결과":
             }
             
         st.success(f"'{selected_arppu_scenario}' 시뮬레이션이 완료되었습니다!")
-
-    # if st.button("🚀 시뮬레이션 실행", type="primary", key="run_sim_main"):
-    #     with st.spinner(f"'{selected_arppu_scenario}' 시나리오로 시뮬레이션을 실행합니다... (첫 실행은 다소 시간이 걸릴 수 있습니다)"):
-    #         current_scenario_template = {
-    #             'media_mix': reconstruct_scenario_from_df(st.session_state.media_mix_df.copy(), 'media_mix'),
-    #             'organic_assumptions': reconstruct_scenario_from_df(st.session_state.organic_df.copy(), 'organic')
-    #         }
-            
-    #         parts = selected_arppu_scenario.split(" ")
-    #         day_part = parts[1].lower() if len(parts) > 1 else "d30"
-    #         uplift_config_key = f"{day_part}_uplift"
-
-    #         arppu_params = {
-    #             'scenario': selected_arppu_scenario,
-    #             'uplift_rate': st.session_state.assumptions['arppu_scenario_weights'].get(uplift_config_key, 1.0),
-    #         }
-            
-    #         # [FIX] Create a comprehensive signature of all settings for robust cache invalidation
-    #         current_settings = {
-    #             "project_info": st.session_state.project_info,
-    #             "assumptions": st.session_state.assumptions,
-    #             "num_simulations": st.session_state.assumptions['monte_carlo']['num_simulations'],
-    #             "scenario_template": current_scenario_template,
-    #             "arppu_params": arppu_params
-    #         }
-    #         settings_signature = json.dumps(current_settings, default=convert_numpy_to_native, sort_keys=True)
-            
-    #         all_df, final_df = run_cached_simulation(settings_signature)
-            
-    #         st.session_state.simulation_results[selected_arppu_scenario] = {"all_df": all_df, "final_df": final_df, "scenario_used": current_scenario_template}
-    #         # Store the signature of the successful run
-    #         st.session_state.last_run_settings_signature = settings_signature
-    #     st.success(f"'{selected_arppu_scenario}' 시뮬레이션이 완료되었습니다!")
 
     if selected_arppu_scenario in st.session_state.simulation_results:
         results = st.session_state.simulation_results[selected_arppu_scenario]
@@ -483,7 +428,7 @@ elif st.session_state.page == "⚙️ 시나리오 에디터":
                             media_df.drop(columns=[col for col in media_df.columns if 'retention' in col and 'scale' in col], inplace=True, errors='ignore')
                             st.session_state.media_mix_df = media_df
 
-                            organic_df = flatten_scenario_df(scenario_data, 'organic')
+                            organic_df = flatten_scenario_from_df(scenario_data, 'organic')
                             organic_df.drop(columns=[col for col in organic_df.columns if 'retention' in col and 'scale' in col], inplace=True, errors='ignore')
                             st.session_state.organic_df = organic_df
                             
