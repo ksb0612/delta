@@ -166,7 +166,7 @@ def render_target_guide(final_df, project_info, assumptions):
         target_roas = project_info['target_roas']
         st.markdown(f"**목표 ROAS:** `{target_roas:.1%}`")
 
-        # 기본 계산값들
+        # 기본 계산값들 (유료 채널 기준)
         paid_installs_median = final_df['paid_installs'].median()
         paid_revenue_median = final_df['paid_revenue'].median()
         paid_pcr_median = final_df['paid_paying_users'].median() / paid_installs_median if paid_installs_median > 0 else 0
@@ -180,16 +180,18 @@ def render_target_guide(final_df, project_info, assumptions):
         improvement_factor = required_paid_revenue / paid_revenue_median if paid_revenue_median > 0 else np.nan
         required_paid_cpi = paid_cpi_median / improvement_factor if not np.isnan(improvement_factor) else np.nan
 
-        # [FIX] LTV, ARPU, ARPPU를 30일 기준으로 재계산
+        # LTV, ARPU, ARPPU를 30일 기준으로 재계산
         from scipy.stats import weibull_min
         ltv_cfg = assumptions['ltv_curve']
         shape, scale = ltv_cfg['shape'], ltv_cfg['scale']
         
         # 전체 LTV 기간 대비 30일차의 매출 비중
+        ltv_duration = project_info.get('ltv_duration_days', 30)
+        total_ltv_ratio = weibull_min.cdf(ltv_duration, c=shape, scale=scale)
         ltv_ratio_d30 = weibull_min.cdf(30, c=shape, scale=scale)
         
-        # 30일차에 필요한 유료 수익
-        required_paid_revenue_d30 = required_paid_revenue * ltv_ratio_d30
+        # 전체 기간 동안의 필요 유료 수익을 30일 기준으로 환산
+        required_paid_revenue_d30 = required_paid_revenue * (ltv_ratio_d30 / total_ltv_ratio) if total_ltv_ratio > 0 else required_paid_revenue
         
         # 30일 기준 목표 ARPU 및 ARPPU
         required_paid_arpu_d30 = required_paid_revenue_d30 / paid_installs_median if paid_installs_median > 0 else 0
@@ -235,17 +237,99 @@ def render_detailed_metrics(final_df):
     if 'total_installs' in df_for_display.columns and 'paid_installs' in df_for_display.columns:
         df_for_display['organic_installs'] = df_for_display['total_installs'] - df_for_display['paid_installs']
 
+    # 데이터를 담을 리스트 초기화
+    metrics_data = []
+
+    # 각 지표에 대해 계산 및 포맷팅
     for key, (metric_key, is_currency, dec, explanation) in kpi_metrics.items():
         if metric_key in df_for_display.columns:
             median_val = df_for_display[metric_key].median()
-            p10, p90 = df_for_display[metric_key].quantile(0.1), df_for_display[metric_key].quantile(0.9)
+            p10 = df_for_display[metric_key].quantile(0.1)
+            p90 = df_for_display[metric_key].quantile(0.9)
             
-            st.metric(key, format_number(median_val, is_currency, dec),
-                    help=f"P10: {format_number(p10, is_currency, dec)}\nP90: {format_number(p90, is_currency, dec)}")
-            st.caption(f"`계산식: {explanation}`")
-            st.divider()
+            metrics_data.append({
+                "지표": key,
+                "P10": format_number(p10, is_currency, dec),
+                "중앙값 (P50)": format_number(median_val, is_currency, dec),
+                "P90": format_number(p90, is_currency, dec),
+                "계산식": explanation
+            })
 
-# 2. app.py의 render_main_charts 함수에 추가할 코드
+    # 데이터프레임 생성 및 출력
+    if metrics_data:
+        metrics_df = pd.DataFrame(metrics_data)
+        st.dataframe(metrics_df, use_container_width=True, hide_index=True)
+
+def render_breakdown_tables(all_df):
+    st.subheader("📊 채널별/국가별 상세 성과")
+    st.caption("각 채널 및 국가별 성과의 중앙값(Median)입니다. 컬럼 헤더를 클릭하여 정렬할 수 있습니다.")
+
+    paid_df = all_df[all_df['type'] != 'Organic'].copy()
+    if paid_df.empty:
+        st.info("성과를 분석할 유료 채널 데이터가 없습니다.")
+        return
+
+    # 각 시뮬레이션별, 채널별 최종 성과 집계
+    channel_summary_per_sim = paid_df.groupby(['sim_id', 'os', 'country', 'name']).agg(
+        total_spend=('spend', 'sum'),
+        total_revenue=('revenue', 'sum'),
+        total_installs=('installs', 'sum')
+    ).reset_index()
+
+    # 채널별 중앙값 성과 계산
+    median_performance = channel_summary_per_sim.drop(columns='sim_id').groupby(['os', 'country', 'name']).median().reset_index()
+
+    # 최종 지표 계산
+    median_performance['ROAS'] = median_performance['total_revenue'] / median_performance['total_spend'].replace(0, np.nan)
+    median_performance['CPI'] = median_performance['total_spend'] / median_performance['total_installs'].replace(0, np.nan)
+    median_performance['Profit'] = median_performance['total_revenue'] - median_performance['total_spend']
+
+    # 국가별 성과 집계
+    country_summary = median_performance.groupby('country').agg(
+        total_spend=('total_spend', 'sum'),
+        total_revenue=('total_revenue', 'sum'),
+        total_installs=('total_installs', 'sum')
+    ).reset_index()
+    country_summary['ROAS'] = country_summary['total_revenue'] / country_summary['total_spend'].replace(0, np.nan)
+    country_summary['CPI'] = country_summary['total_spend'] / country_summary['total_installs'].replace(0, np.nan)
+    country_summary['Profit'] = country_summary['total_revenue'] - country_summary['total_spend']
+
+
+    # UI 탭 생성
+    tab1, tab2 = st.tabs(["📈 국가별 요약", "📋 채널별 상세"])
+
+    with tab1:
+        st.dataframe(
+            country_summary.style.format({
+                "total_spend": "{:,.0f}원",
+                "total_revenue": "{:,.0f}원",
+                "total_installs": "{:,.0f}",
+                "ROAS": "{:.2%}",
+                "CPI": "{:,.0f}원",
+                "Profit": "{:,.0f}원"
+            }),
+            use_container_width=True
+        )
+    
+    with tab2:
+        # 컬럼 이름 변경 및 순서 정리
+        channel_detail_display = median_performance.rename(columns={
+            'os': 'OS', 'country': '국가', 'name': '채널',
+            'total_spend': '총 지출', 'total_revenue': '총 수익', 'total_installs': '총 설치 수'
+        })
+        
+        st.dataframe(
+            channel_detail_display[['OS', '국가', '채널', 'ROAS', 'CPI', 'Profit', '총 수익', '총 지출', '총 설치 수']]
+            .style.format({
+                "총 지출": "{:,.0f}원",
+                "총 수익": "{:,.0f}원",
+                "총 설치 수": "{:,.0f}",
+                "ROAS": "{:.2%}",
+                "CPI": "{:,.0f}원",
+                "Profit": "{:,.0f}원"
+            }),
+            use_container_width=True
+        )
 
 def render_main_charts(all_df, final_df, _config, _scenario_template):
     st.subheader("📊 심층 분석 차트")
@@ -317,7 +401,7 @@ if st.sidebar.button("🔄 캐시 초기화"):
 page_options = ["📊 대시보드 & 결과", "⚙️ 시나리오 에디터", "🔍 모델 신뢰도 평가"]
 st.session_state.page = st.sidebar.radio("페이지를 선택하세요", page_options, label_visibility="collapsed")
 
-st.title("📈 MediaMix Simulator (v8.9 - Final)")
+st.title("📈 동적 미디어믹스 시뮬레이터 (v9.0 - Final)")
 
 # --- Page Content ---
 if st.session_state.page == "📊 대시보드 & 결과":
@@ -377,6 +461,11 @@ if st.session_state.page == "📊 대시보드 & 결과":
         
         with st.container(border=True):
             render_detailed_metrics(results['final_df'])
+        
+        st.divider()
+
+        with st.container(border=True):
+            render_breakdown_tables(results['all_df']) # NEW: Breakdown tables
         
         st.divider()
 
@@ -617,8 +706,8 @@ elif st.session_state.page == "⚙️ 시나리오 에디터":
             r1, r2, r3, r4 = st.columns(4)
             ret_d1_loc = r1.number_input("D1", value=default_org['retention_d1']['loc'], key="org_d1_loc", format="%.4f")
             ret_d7_loc = r2.number_input("D7", value=default_org['retention_d7']['loc'], key="org_d7_loc", format="%.4f")
-            ret_d14_loc = r3.number_input("D14", value=default_org['retention_d14']['loc'], key="org_d14_loc", format="%.4f")
-            ret_d30_loc = r4.number_input("D30", value=default_org['retention_d30']['loc'], key="org_d30_loc", format="%.4f")
+            ret_d14_loc = r3.number_input("D14", value=default_org['retention_d14']['loc'], key="d14_loc", format="%.4f")
+            ret_d30_loc = r4.number_input("D30", value=default_org['retention_d30']['loc'], key="d30_loc", format="%.4f")
                 
             submitted = st.form_submit_button("국가 추가")
             if submitted:
